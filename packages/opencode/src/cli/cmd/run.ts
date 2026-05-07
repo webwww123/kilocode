@@ -27,6 +27,7 @@ import { BashTool } from "../../tool/bash"
 import { TodoWriteTool } from "../../tool/todo"
 import { Locale } from "@/util/locale"
 import { importCloudSession, validateCloudFork } from "@/kilocode/cloud-session" // kilocode_change
+import { KiloRun } from "@/kilocode/cli/cmd/run" // kilocode_change
 import { AppRuntime } from "@/effect/app-runtime"
 
 type ToolProps<T> = {
@@ -353,6 +354,7 @@ export const RunCommand = cmd({
       UI.error("--fork requires --continue or --session")
       process.exit(1)
     }
+    KiloRun.validateBuiltin(args) // kilocode_change
     // kilocode_change start
     const cloudForkError = validateCloudFork(args)
     if (cloudForkError) {
@@ -689,7 +691,8 @@ export const RunCommand = cmd({
         process.exit(1)
       })
 
-      if (args.command) {
+      if (KiloRun.isBuiltin(args.command)) await KiloRun.runBuiltin(sdk, sessionID, args.command, args.model) // kilocode_change
+      else if (args.command) {
         await sdk.session.command({
           sessionID,
           agent,
