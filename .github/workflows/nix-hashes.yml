@@ -75,8 +75,6 @@ jobs:
       - name: Upload hash
         uses: actions/upload-artifact@v7 # kilocode_change
         with:
-          retention-days: 3
-        with:
           name: hash-${{ matrix.system }}
           path: hash.txt
           retention-days: 3
