@@ -105,7 +105,7 @@ jobs:
           name: unit-${{ matrix.settings.name }}-${{ github.run_attempt }}
           include-hidden-files: true
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 3
           path: packages/*/.artifacts/unit/junit.xml
 
   required:

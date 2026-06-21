@@ -201,7 +201,7 @@ jobs:
         with:
           name: visual-regression-results
           path: packages/kilo-ui/test-results/
-          retention-days: 7
+          retention-days: 3
 
   visual-regression-vscode:
     needs: check-paths
@@ -394,4 +394,4 @@ jobs:
         with:
           name: visual-regression-vscode-results
           path: packages/kilo-vscode/test-results/
-          retention-days: 7
+          retention-days: 3

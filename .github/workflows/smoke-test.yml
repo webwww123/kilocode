@@ -149,5 +149,5 @@ jobs:
             jobs/smoke-test-*/**/result.json
             jobs/smoke-test-*/**/trajectory.json
             jobs/smoke-test-*/**/agent/setup/*.txt
-          retention-days: 30
+          retention-days: 3
           if-no-files-found: warn
