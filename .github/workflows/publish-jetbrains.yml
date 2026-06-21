@@ -162,6 +162,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 3
+        with:
           name: kilo-jetbrains-${{ steps.version.outputs.version }}
           path: packages/kilo-jetbrains/build/distributions/*.zip
           if-no-files-found: ignore

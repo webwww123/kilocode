@@ -197,6 +197,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7 # kilocode_change
         with:
+          retention-days: 3
+        with:
           name: visual-regression-results
           path: packages/kilo-ui/test-results/
           retention-days: 7
@@ -387,6 +389,8 @@ jobs:
       - name: Upload test results on failure
         if: failure()
         uses: actions/upload-artifact@v7 # kilocode_change
+        with:
+          retention-days: 3
         with:
           name: visual-regression-vscode-results
           path: packages/kilo-vscode/test-results/
