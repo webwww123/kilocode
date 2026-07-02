@@ -5,30 +5,27 @@ import { FetchHttpClient } from "effect/unstable/http"
 import { NodeFileSystem } from "@effect/platform-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
-import { Config } from "../../../src/config/config"
-import { emptyConsoleState } from "../../../src/config/console-state"
+import { RuntimeFlags } from "../../../src/effect/runtime-flags"
+import { Reference } from "../../../src/reference/reference"
 import { Instruction } from "../../../src/session/instruction"
 import { MessageID } from "../../../src/session/schema"
 import { Global } from "@opencode-ai/core/global"
 import { provideTmpdirInstance } from "../../fixture/fixture"
 import { testEffect } from "../../lib/effect"
+import { TestConfig } from "../../fixture/config"
 
-const it = testEffect(Layer.mergeAll(CrossSpawnSpawner.defaultLayer, NodeFileSystem.layer))
-
-const configLayer = Layer.succeed(
-  Config.Service,
-  Config.Service.of({
-    get: () => Effect.succeed({}),
-    getGlobal: () => Effect.succeed({}),
-    getConsoleState: () => Effect.succeed(emptyConsoleState),
-    update: () => Effect.void,
-    updateGlobal: (config) => Effect.succeed(config),
-    invalidate: () => Effect.void,
-    directories: () => Effect.succeed([]),
-    waitForDependencies: () => Effect.void,
-    warnings: () => Effect.succeed([]),
-  }),
+const reference = Layer.mock(Reference.Service)({
+  init: () => Effect.void,
+  list: () => Effect.succeed([]),
+  get: () => Effect.succeed(undefined),
+  ensure: () => Effect.void,
+  contains: () => Effect.succeed(false),
+})
+const it = testEffect(
+  Layer.mergeAll(CrossSpawnSpawner.defaultLayer, NodeFileSystem.layer, reference, RuntimeFlags.layer()),
 )
+
+const configLayer = TestConfig.layer()
 
 const layer = (dir: string) =>
   Instruction.layer.pipe(

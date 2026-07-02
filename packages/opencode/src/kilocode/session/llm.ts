@@ -1,14 +1,42 @@
 import type { ModelMessage } from "ai"
+import * as Stream from "effect/Stream"
+import type { LLMEvent } from "@opencode-ai/llm"
+import type { Logger } from "@opencode-ai/core/util/log"
 import type { Provider } from "@/provider/provider"
-import { Token } from "@/util/token"
+import { KiloSessionOverflow } from "./overflow"
 
-// Token.estimate consistently under-counts by ~15-30% vs. actual provider tokenizers.
-// Multiply all estimates by this factor and add a fixed safety margin to compensate.
-const ESTIMATE_FACTOR = 1.3
 const SAFETY = 2048
 const MIN_OUTPUT = 1024
 
 export namespace KiloLLM {
+  // Stream failures and interruptions propagate while text deltas are collected.
+  export function text(stream: Stream.Stream<LLMEvent, unknown>) {
+    return stream.pipe(
+      Stream.map((event) => (event.type === "text-delta" ? event.text : "")),
+      Stream.mkString,
+    )
+  }
+
+  export function timeout(input: {
+    options: Record<string, unknown>
+    fallback?: Record<string, unknown>
+    log?: Pick<Logger, "debug">
+  }): { timeout?: { chunkMs: number } } {
+    const value =
+      typeof input.options["chunkTimeout"] === "number"
+        ? input.options["chunkTimeout"]
+        : typeof input.fallback?.["chunkTimeout"] === "number"
+          ? input.fallback["chunkTimeout"]
+          : undefined
+    if (!value) return {}
+    input.log?.debug("chunk idle timeout configured", { chunkTimeout: value })
+    return { timeout: { chunkMs: value } }
+  }
+
+  export function needsEstimate(input: { model: Provider.Model; configured: number | undefined }) {
+    return input.configured !== undefined && input.configured > 0 && input.model.limit.context > 0
+  }
+
   /**
    * Caps `maxOutputTokens` to fit within the model's context window after
    * accounting for the actual estimated input tokens (messages + tool schemas).
@@ -23,26 +51,15 @@ export namespace KiloLLM {
     messages: ModelMessage[]
     tools: Record<string, { description?: string; inputSchema?: unknown }>
     configured: number | undefined
+    tokens?: number
   }): number | undefined {
     if (input.configured == null) return input.configured
     if (input.configured <= 0) return undefined
     const { context } = input.model.limit
     if (!context) return input.configured
 
-    const msgTokens = Math.ceil(Token.estimate(JSON.stringify(input.messages)) * ESTIMATE_FACTOR)
-    const toolTokens = Math.ceil(
-      Token.estimate(
-        JSON.stringify(
-          Object.entries(input.tools).map(([name, t]) => ({
-            name,
-            description: t.description,
-            inputSchema: t.inputSchema,
-          })),
-        ),
-      ) * ESTIMATE_FACTOR,
-    )
-
-    const available = context - msgTokens - toolTokens - SAFETY
+    const tokens = input.tokens ?? KiloSessionOverflow.measure({ messages: input.messages, tools: input.tools }).raw
+    const available = context - tokens - SAFETY
     // If available is ≤0 the input alone exceeds context — return the original
     // value so the provider returns a natural overflow error which triggers
     // compaction (compactionAttempts guard stops the loop eventually).

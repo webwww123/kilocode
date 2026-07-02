@@ -20,6 +20,8 @@
 
 When looking for IntelliJ Platform API usage, implementation examples, extension points, services, actions, inspections, PSI/VFS/editor behavior, or plugin patterns, prefer real IntelliJ source code over Gradle caches, downloaded jars, generated parser artifacts, or decompiled classes.
 
+Do not use IntelliJ Platform APIs marked as internal in the IntelliJ source repository. Find a public API alternative or keep the integration behind supported extension points. Experimental APIs are acceptable when needed, but warn the user that the integration relies on an experimental IntelliJ API.
+
 Use this priority order:
 
 1. Check whether `$INTELLIJ_REPO` is set and points to a readable IntelliJ Community checkout.
@@ -130,8 +132,18 @@ For blocking I/O in coroutines, move the dispatcher switch inside the callee usi
 - Any code path that modifies UI state or depends on EDT threading must have tests that exercise the actual implementation.
 - Extend `BasePlatformTestCase` to get a real IntelliJ Application and EDT in tests. The session package already uses `SessionControllerTestBase` which wraps this.
 - Do not mock the EDT or threading assertions — test against the real threading model.
+- Do not add production methods whose only purpose is test access. Prefer exercising the public API and inspecting the real Swing component tree in tests.
+- Do not expose `internal` accessors, helper methods, or synthetic seams just so tests can inspect private implementation details. If a test needs this, either assert observable UI/action behavior or refactor the production API so the new seam has real product value.
 - For state-driven updates, assert that the component state matches after flushing coroutines and draining the EDT.
 - For retained Swing components, assert that expand/collapse, update, and no-op paths work correctly without rebuilding the component tree.
+
+### Integration Test Timeouts
+
+- Prefer deterministic synchronization over timeouts: wait for explicit state transitions, event emissions, fake server hooks, latches, or coroutine completions that prove the system reached the expected condition.
+- Use timeouts only when an integration test cannot otherwise protect the suite from a stuck process, external boundary, or coroutine. Treat them as watchdogs, not as the mechanism that makes the test pass.
+- When a timeout is necessary, define one named timeout or wait helper near the top of the test file and reuse it. Do not scatter literal timeout values through individual assertions.
+- Timeout failures should include the last observed state and useful logs or errors so CI explains what blocked progress.
+- Do not use `delay`, sleeps, or repeated polling to guess when asynchronous work is done unless the behavior under test is timing-specific.
 
 ## Dependencies
 
@@ -153,17 +165,44 @@ For blocking I/O in coroutines, move the dispatcher switch inside the callee usi
 
 - The plugin spawns `kilo serve --port 0` (OS assigns random port) and reads stdout for `listening on http://...:(\d+)` to discover the port.
 - A random 32-byte hex password is passed via `KILO_SERVER_PASSWORD` env var for Basic Auth.
-- Key env vars: `KILO_CLIENT=jetbrains`, `KILO_PLATFORM=jetbrains`, `KILO_APP_NAME=kilo-code`, `KILO_ENABLE_QUESTION_TOOL=true`.
+- Fixed env vars set on every spawn: `KILO_CLIENT=jetbrains`, `KILO_PLATFORM=jetbrains`, `KILO_APP_NAME=kilo-code`, `KILO_ENABLE_QUESTION_TOOL=true`, `KILO_DISABLE_CLAUDE_CODE=true`, `KILOCODE_FEATURE=jetbrains-plugin`.
+- Unless already provided by the base environment, the backend sets `KILO_CONFIG_CONTENT` to make `edit` and `bash` permissions ask by default for JetBrains-launched CLI processes.
 - This is the same protocol used by the VS Code extension (`packages/kilo-vscode/src/services/cli-backend/server-manager.ts`).
+
+### Dev Storage Isolation
+
+- In development (`runIdeSplitMode`, `runIdeBackend`, `runIdeFrontend`, or `runIde`), the Gradle property `kilo.dev.storage.isolated=true` makes the backend set `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` to `<worktree>/.kilo-dev/{data,config,state,cache}` before spawning the CLI. The worktree root comes from the `kilo.dev.worktree.root` JVM system property (auto-set by Gradle from the project directory).
+- The checked-in `Run IDE (Backend)`, `Run IDE (Frontend)`, and `Run IDE (Split Mode)` run configurations enable isolation by default (`-Pkilo.dev.storage.isolated=true`). Developers can disable it by passing `-Pkilo.dev.storage.isolated=false`.
+- Use standard `XDG_*_HOME` env vars for this isolation. Do not introduce custom `KILO_DATA_DIR`, `KILO_GLOBAL_CONFIG_DIR`, `KILO_STATE_DIR`, or `KILO_CACHE_DIR` env vars — the CLI core already respects `XDG_*_HOME` via `xdg-basedir`.
+- The `.kilo-dev/` directory is gitignored and created automatically on first run.
+- The implementation lives in `KiloBackendCliManager.buildEnv()` / `devStorageEnv()`. Tests: `KiloBackendCliManagerEnvTest`.
+
+### Debugging Session Event Logs
+
+- Use `script/dev/part-update.sh client <session-id>` from `packages/kilo-jetbrains/` to print frontend `message.part.delta` text by part id.
+- Use `script/dev/part-update.sh backend <session-id>` from `packages/kilo-jetbrains/` for backend sandbox events.
+- Append with `>> file.txt` when you need to keep the output.
+- For full chat payload previews in JetBrains dev runs, pass `-Pkilo.dev.log.chat.content=<mode>` where `<mode>` is `off` (default, no content), `preview` (cleaned/truncated content), or `full` (cleaned full content).
+- `-Pkilo.dev.log.chat.preview.max=<n>` controls preview length, clamped from 1 to 2000.
 
 ## Build and Verification
 
+- **Marketplace version build**: Use `script/build-version.sh <version>` from `packages/kilo-jetbrains/` to clean, prepare production CLI binaries, build, sign, and verify the JetBrains Marketplace plugin ZIP. Pass `--skip-verification` only when explicitly needed.
+- **Test version build**: If the user asks for a JetBrains test build, still require a version and use `script/build-version.sh <version> --skip-signing --skip-verification` from `packages/kilo-jetbrains/` so no signing secrets are needed. Add `--skip-clean` only when the user wants a faster incremental test build.
 - **Typecheck**: `bun run typecheck` or `./gradlew typecheck` from `packages/kilo-jetbrains/` — compiles all Kotlin sources including the generated API client. Does NOT require CLI binaries.
 - **Full build**: `bun run build` from `packages/kilo-jetbrains/` (prepares CLI binaries + runs Gradle `buildPlugin`).
 - **Gradle only**: `./gradlew buildPlugin` from `packages/kilo-jetbrains/` (requires CLI binaries already present in `backend/build/generated/cli/`; run `bun run build --prepare-cli` first).
+- **Java checks**: Do not run `java -version` as a routine preflight. Gradle commands already fail clearly when Java is missing or incompatible; check Java only when diagnosing that failure mode.
 - **Via Turbo**: `bun turbo build --filter=@kilocode/kilo-jetbrains` from repo root.
-- **Run in sandbox**: `./gradlew runIde` — launches sandboxed IntelliJ with the plugin. Does NOT build CLI binaries.
-- **Test split mode**: `./gradlew generateSplitModeRunConfigurations` creates a "Run IDE (Split Mode)" config that starts both frontend and backend processes locally. Emulate latency via the Split Mode widget (requires internal mode: `-Didea.is.internal=true`).
+- **Run split mode**: `./gradlew --no-configuration-cache runIdeSplitMode` or the checked-in `Run IDE (Split Mode)` configuration — launches backend and frontend locally and prepares the local-platform CLI binary automatically. Emulate latency via the Split Mode widget (requires internal mode: `-Didea.is.internal=true`).
+- **Run split backend**: `./gradlew --no-configuration-cache runIdeBackend` — prepares the local-platform CLI binary automatically; if it exits shortly after startup, check for an orphaned Java process from a previous backend run and kill it before restarting.
+- **Run in monolithic sandbox**: `./gradlew runIde` — launches sandboxed IntelliJ with the plugin. Does NOT build CLI binaries.
+
+### CLI/SDK Change Awareness
+
+- JetBrains runtime behavior depends on the bundled CLI artifact under `backend/build/generated/cli/`; Gradle-only tasks and sandbox runs do not rebuild it.
+- If there are relevant changes outside `packages/kilo-jetbrains/` in the CLI (`packages/opencode/`) or SDK/API generation paths (`packages/sdk/js/`, server endpoints, OpenAPI outputs), warn the user that the JetBrains run may be using stale generated CLI or SDK artifacts.
+- Do not regenerate or rebuild those artifacts automatically just because such changes exist. Ask the user whether to refresh them first, typically with `bun run build --prepare-cli` from `packages/kilo-jetbrains/` for CLI artifacts and `./script/generate.ts` from the repo root for server/API SDK changes.
 
 ## UI Guidelines
 
@@ -202,7 +241,6 @@ Before introducing any new reusable color, spacing value, border, size, font, or
 - `SessionUiStyle.View` — card sizing, card borders, surfaces, hover colors, and nested objects for `Prompt`, `Reasoning`, `Message`, and `Tool`.
 - `SessionUiStyle.RecentSessions` — recent sessions list limits.
 - `SessionUiStyle.Timeline` — activity-indicator colors for the session header timeline.
-- `Dock` — border presets for question, permission, and connection dock panels.
 
 Rules:
 - Generic layout constants (gaps, generic colors, reusable helpers) → `UiStyle`.
@@ -213,6 +251,7 @@ Rules:
 ### Primary UI Rules
 
 - Use IntelliJ platform components instead of raw Swing where an equivalent exists (see [Platform Components](#platform-components-and-utilities) table below).
+- When implementing a new user-facing action, consider adding metrics so usage can be tracked.
 - Do not set default Swing properties explicitly. Avoid `isOpaque = false` unless the component default differs or there is a documented rendering reason.
 - Avoid hardcoded dimensions, colors, and font sizes — use the platform style APIs described in [Theme-Derived Colors](#theme-derived-colors), [Theme-Derived Fonts](#theme-derived-fonts), and [Borders, Insets, and Spacing](#borders-insets-and-spacing).
 - Put user-visible strings in `*.properties` files.
@@ -244,6 +283,22 @@ Tests for retained Swing components should assert:
 - `update(model)` changes existing labels/body text without duplicating components.
 - Updates while collapsed do not eagerly create lazy bodies.
 - No-op updates, empty deltas, repeated hover values, and toggling non-expandable cards do not repaint/revalidate the whole view.
+- Streaming/rebuilding surfaces additionally require stress + leak tests (see below).
+
+### Stress and Leak Tests for Streaming UI
+
+Session/transcript UI that streams updates or rebuilds its component tree (markdown
+views, code blocks, transcript parts, collapsible cards) must ship stress + leak tests in
+addition to behavior tests. These tests must:
+
+- Drive many updates (hundreds of streamed deltas or `set` cycles) through the public API.
+- Assert that retained component instances stay identical across updates (`assertSame`).
+- Assert the component count stays bounded — no growth per update.
+- Assert disposable-backed resources return to baseline after churn + clear/dispose.
+  For code editors, compare `EditorFactory.getInstance().allEditors.size` against a
+  baseline captured before the loop.
+
+See `MdViewHybridStressTest` for the reference pattern.
 
 ### Platform Components and Utilities
 
@@ -355,8 +410,90 @@ For common spacing lookups, prefer `JBUI.CurrentTheme` area-specific insets (e.g
 | Side separators | `JBUI.Borders.customLineTop(...)`, `customLineBottom(...)` |
 | Composed borders | `JBUI.Borders.compound(...)`, `JBUI.Borders.merge(...)` |
 | Simple `BorderLayout` panels | `JBUI.Panels.simplePanel(...)`, `BorderLayoutPanel` |
-| Simple vertical custom Swing groups | `VerticalLayout` |
+| One-dimensional multi-component rows/columns | `ai.kilocode.client.ui.layout.Stack` — see section below |
 | Fluent platform panels | `JBPanel.withBorder(...)`, `.andTransparent()`, `.andOpaque()`, `.withBackground(...)` |
+| Single-component alignment wrapper | `ai.kilocode.client.ui.layout.Align` — see section below |
+
+### Stack — One-Dimensional Multi-Component Layout
+
+Use `Stack` (`ai.kilocode.client.ui.layout.Stack`) when multiple Swing components should be laid out as one vertical column or one horizontal row without visual chrome. It is a transparent, no-border, no-color `JPanel(null)` that lays out visible children in insertion order.
+
+**Behavior:**
+
+| Mode | Layout behavior | Size contribution |
+|---|---|---|
+| `Stack.vertical(gap)` | Children are placed top-to-bottom; each child fills the available container width; each child keeps its bounded preferred height | Width is max child width; height is summed child heights plus gaps |
+| `Stack.horizontal(gap)` | Children are placed left-to-right; each child fills the available container height; each child keeps its bounded preferred width | Width is summed child widths plus gaps; height is max child height |
+
+"Bounded preferred" means the child's preferred size on the stack axis is coerced into the effective `[min, max]` range. On the cross axis, layout tracks the container size even if that ignores an individual child's preferred/minimum/maximum size.
+
+**Factories and fluent additions:**
+
+```kotlin
+Stack.vertical()
+    .next(header)
+    .next(body)
+
+Stack.horizontal(gap = UiStyle.Gap.md())
+    .next(icon)
+    .next(label)
+
+Stack.vertical(gap = UiStyle.Gap.sm())
+    .next(summary)
+    .gap(UiStyle.Gap.lg())
+    .next(details)
+
+Stack.vertical()
+    .next(header)
+    .fill(UiStyle.Gap.pad())
+    .next(body)
+
+Stack.horizontal()
+    .next(icon)
+    .fill(UiStyle.Gap.sm())
+    .next(label)
+```
+
+**Rules:**
+
+- Prefer `Stack.vertical(...)` or `Stack.horizontal(...)` over one-off `JPanel` + `BoxLayout` or simple single-line `FlowLayout` rows/columns.
+- Use the constructor `gap` for the normal spacing between adjacent visible children.
+- Use `gap(size)` for an explicit one-off gap only when the next added child is the next visible child. It is ignored when it is trailing or when a hidden component appears before the next visible child.
+- Use `fill(size)`, `Stack.verticalFiller(size)`, or `Stack.horizontalFiller(size)` for persistent leading, trailing, or interstitial whitespace. Do not use `Box` or `gap(size)` for persistent spacing.
+- Use `Stack` for simple retained Swing rows/columns where children should track the cross-axis size. Use `Align` for positioning one child inside available space.
+- Do not use `Stack` for padding, borders, colors, wrapping rows, flexible glue, or transcript components that need width-aware HTML reflow. Use `JBUI.Borders.empty(...)`, `UiStyle.Gap`, purpose-built layouts, or `SessionLayout` for those concerns.
+
+### Align — Single-Component Alignment Wrapper
+
+Use `Align` (`ai.kilocode.client.ui.layout.Align`) when a single Swing component must be positioned inside available space without adding visual chrome. It is a transparent, no-border, no-color `JPanel(null)` that lays out its one child according to independent horizontal (`HAlign`) and vertical (`VAlign`) modes. `CenterShrinkPanel` has been removed; use `child.align(HAlign.CENTER, VAlign.CENTER)` as a direct replacement.
+
+**Alignment modes:**
+
+| Mode | Axis | Layout behavior | Wrapper size contribution |
+|---|---|---|---|
+| `HAlign.TRACK` / `VAlign.TRACK` | either | Child always fills all available space; ignores child min/preferred/max | Zero (wrapper reports insets only on that axis) |
+| `HAlign.FIT` / `VAlign.FIT` | either | Child fills available space clamped to child's effective `[min, max]` range | Child min/preferred/max respected |
+| `HAlign.LEFT` / `VAlign.TOP` | H / V | Child placed at left/top edge at bounded preferred size; shrinks to available when necessary | Child min/preferred/max respected |
+| `HAlign.CENTER` / `VAlign.CENTER` | H / V | Child centered at bounded preferred size; shrinks to available when necessary | Child min/preferred/max respected |
+| `HAlign.RIGHT` / `VAlign.BOTTOM` | H / V | Child placed at right/bottom edge at bounded preferred size; shrinks to available when necessary | Child min/preferred/max respected |
+
+"Bounded preferred" means the child's preferred size coerced into the effective `[min, max]` range. If available space is smaller than the effective minimum, the layout shrinks the child to available space to avoid overflow.
+
+**Factory extension** on `Component`:
+
+```kotlin
+child.align(HAlign.LEFT, VAlign.TOP)      // left-aligned, top-pinned
+child.align(HAlign.CENTER, VAlign.CENTER) // centered (replaces CenterShrinkPanel)
+child.align(HAlign.TRACK, VAlign.CENTER)  // fill width, center vertically
+child.align(HAlign.TRACK, VAlign.TRACK)   // fill all available space
+```
+
+**Rules:**
+
+- Prefer `child.align(h, v)` over creating one-off `JPanel(FlowLayout(...))` or `BorderLayoutPanel` wrappers just to control alignment.
+- Use `TRACK` when the child must occupy all available space on an axis and must not reserve any space in the parent's size negotiation on that axis. Use `FIT` when you want to fill available space but still respect child min/max constraints.
+- All non-TRACK modes include the child's min, preferred, and max sizes in the wrapper's own min/preferred/max size. This means parent layout managers see the child constraints through the wrapper.
+- Do not use `Align` for spacing, padding, borders, colors, or multi-child layout — use `JBUI.Borders.empty(...)`, `UiStyle.Gap`, or an appropriate layout manager for those concerns.
 
 ### IntelliJ UI Surfaces
 
